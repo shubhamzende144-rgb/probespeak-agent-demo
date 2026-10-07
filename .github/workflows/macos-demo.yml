@@ -1,0 +1,45 @@
+name: macos-demo
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  sign:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+      - name: Build, ad-hoc sign, and check health
+        run: |
+          set -euo pipefail
+          APP="ProbeSpeak Agent.app"
+          mkdir -p "$APP/Contents/MacOS"
+          CGO_ENABLED=0 go build -o "$APP/Contents/MacOS/ProbeSpeakAgent" .
+          cp Info.plist "$APP/Contents/Info.plist"
+          codesign --force --sign - --identifier in.probespeak.agent.demo "$APP"
+          echo "=== file ==="
+          file "$APP/Contents/MacOS/ProbeSpeakAgent"
+          echo "=== codesign ==="
+          codesign -dv --verbose=2 "$APP"
+          codesign --verify --verbose=2 "$APP"
+          "$APP/Contents/MacOS/ProbeSpeakAgent" > /tmp/agent.log 2>&1 &
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -sf http://127.0.0.1:8765/health; then
+              echo
+              break
+            fi
+            sleep 0.5
+          done
+          curl -sf http://127.0.0.1:8765/health | grep -q '"ok":true'
+          code=$(curl -s -o /tmp/reject.json -w "%{http_code}" -X POST http://127.0.0.1:8765/verify -H 'Content-Type: application/json' -d '{"command":"id"}')
+          test "$code" = "400"
+          grep -q 'arbitrary commands are rejected' /tmp/reject.json
+          ditto -c -k --keepParent "$APP" ProbeSpeak-Agent-adhoc-arm64.zip
+          unzip -t ProbeSpeak-Agent-adhoc-arm64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ProbeSpeak-Agent-adhoc-arm64
+          path: ProbeSpeak-Agent-adhoc-arm64.zip
+          if-no-files-found: error
